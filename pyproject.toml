@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "demon-hand-solver"
+version = "0.1.0"
+description = "A solver for The demon hand game released by Riot Games"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = [
+    "opencv-python>=4.11.0.86",
+    "numpy>=2.2.4",
+    "matplotlib>=3.10.1",
+    "pynput>=1.8.1",
+    "pyautogui"
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[project.scripts]
+demon-hand-solver = "demon_hand_solver.__main__:main"

@@ -1,0 +1,5 @@
+# Include the placeholder file in DATA so the folder is included
+include demon_hand_solver/DATA/.empty
+
+# Recursively include everything inside the templates folder
+recursive-include demon_hand_solver/templates *
