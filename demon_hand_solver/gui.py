@@ -1,20 +1,32 @@
 from enum import Enum
 import multiprocessing
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 from .demon_hand_mcts import (
-    Card, Deck, GameState,  mcts, compute_best_attack,
+    Card, Deck, GameState, mcts, compute_best_attack,
     precompute_tables, RANKS, SUITS
 )
 from .ocr_hand import get_hands_ocr  # Import the OCR function
-
 
 # Global variables
 persistent_deck = Deck()
 prev_hand = None
 suggested_action = None
 
+# Helper function to run OCR in a separate process
+def ocr_process(conn):
+    """
+    Runs the get_hands_ocr function and sends the result via a connection.
+    """
+    try:
+        result = get_hands_ocr()
+        conn.send(result)
+    except Exception as e:
+        conn.send(e)
+    finally:
+        conn.close()
 
 class STATE(Enum):
     IDLE = 0    
@@ -36,7 +48,7 @@ class GameApp(tk.Tk):
         self.enemy_attack_power_var = tk.StringVar(value="3")
         self.enemy_attack_counter_var = tk.StringVar(value="2")
         self.discard_count_var = tk.StringVar(value="3")
-        self.coin_counter_var = tk.StringVar(value="0")
+        self.enemy_base_counter_var = tk.StringVar(value="3")
 
         # Deck size variable (display "N/A" if no deck yet)
         self.deck_size_var = tk.StringVar(value=f"{int(len(persistent_deck.cards))}")
@@ -46,7 +58,7 @@ class GameApp(tk.Tk):
         # OCR state variables
         self.ocr_running = False
         self.ocr_cancelled = False
-        self.ocr_thread = None
+        self.ocr_process_obj = None  # To hold the OCR process reference
 
         self.mcts_state = STATE.IDLE
 
@@ -89,12 +101,12 @@ class GameApp(tk.Tk):
         self.create_console_frame(self.right_frame)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
        
-        
         # Store current game state
         self.game_state = None
         self.deck = None  # persistent deck is maintained globally
          # Precompute tables in background
         threading.Thread(target=self.threaded_precompute_tables, daemon=True).start()
+
     def on_close(self):
         try:
             if self.pool:
@@ -152,9 +164,9 @@ class GameApp(tk.Tk):
             ("Player Health",        self.player_health_var),
             ("Enemy Health",         self.enemy_health_var),
             ("Enemy Attack Power",   self.enemy_attack_power_var),
-            ("Enemy Attack Counter", self.enemy_attack_counter_var),
+            ("Enemy  Attack Counter", self.enemy_attack_counter_var),
             ("Available Discards",   self.discard_count_var),
-            ("Coin Counter",         self.coin_counter_var),
+            ("Enemy base Attack Counter",         self.enemy_base_counter_var),
         ]
 
         # Create label/entry for each input
@@ -216,7 +228,7 @@ class GameApp(tk.Tk):
         self.console_text.config(state="disabled")
 
     # --------------------------------------------------------------------------
-    # OCR methods with Run/Cancel toggling
+    # OCR methods with Run/Cancel toggling using a separate process
     # --------------------------------------------------------------------------
     def start_threaded_ocr(self):
         """
@@ -227,10 +239,8 @@ class GameApp(tk.Tk):
             self.ocr_running = True
             self.ocr_cancelled = False
             self.ocr_button.config(text="Cancel OCR")
-
             self.log("Navigate to the game client and use numpad-0 to capture a screenshot")
-            self.ocr_thread = threading.Thread(target=self.run_ocr, daemon=True)
-            self.ocr_thread.start()
+            threading.Thread(target=self.run_ocr, daemon=True).start()
         else:
             # Cancel OCR
             self.ocr_cancelled = True
@@ -238,41 +248,54 @@ class GameApp(tk.Tk):
 
     def run_ocr(self):
         """
-        Actually runs the OCR in a background thread. We check self.ocr_cancelled
-        to allow a 'soft' cancel (i.e., if the OCR call returns quickly enough).
+        Runs OCR in a separate process so that it can be terminated if needed.
         """
-        try:
-            # Check if user canceled immediately
+        parent_conn, child_conn = multiprocessing.Pipe()
+        self.ocr_process_obj = multiprocessing.Process(target=ocr_process, args=(child_conn,))
+        self.ocr_process_obj.start()
+
+        # Wait in a loop, checking for cancellation
+        while self.ocr_process_obj.is_alive():
             if self.ocr_cancelled:
+                self.ocr_process_obj.terminate()
+                self.log("OCR process terminated due to cancellation.")
+                self.after(0, self.finish_ocr)
                 return
+            time.sleep(0.1)
 
-            ocr_result = get_hands_ocr()
+        # Process finished naturally; get the result
+        if parent_conn.poll():
+            ocr_result = parent_conn.recv()
+        else:
+            ocr_result = None
 
-            # Check again if user canceled after OCR finishes
-            if self.ocr_cancelled:
-                return
+        self.ocr_process_obj.join()
 
-            # Convert OCR result into Card objects and update our hand.
-            new_hand = []
-            suit_mapping = {"Flame": "Fire"}
-            for suit, rank in ocr_result:
-                mapped_suit = suit_mapping.get(suit, suit)
-                new_hand.append(Card(mapped_suit, rank))
-            self.current_hand = new_hand
-            # Refresh the hand UI on the main thread
-            self.after(0, self.refresh_hand_ui)
-            self.after(0, lambda: self.log(
-                "OCR-detected hand:\n" +
-                "\n".join(f"{i+1}. {card}" for i, card in enumerate(self.current_hand)) +
-                "\nThe deck has not been updated yet.\n"
-                "Fix any errors then click 'Edit Deck' or 'Find Next Action'."
-            ))  
-
-        except Exception as e:
-            self.after(0, lambda e_msg=str(e): messagebox.showerror("OCR failed (make sure your in the game):", e_msg))
-        finally:
-            # In all cases, revert OCR state in the main thread
+        if self.ocr_cancelled or ocr_result is None:
             self.after(0, self.finish_ocr)
+            return
+
+        if isinstance(ocr_result, Exception):
+            self.after(0, lambda: messagebox.showerror("OCR failed (make sure you're in the game):", str(ocr_result)))
+            self.after(0, self.finish_ocr)
+            return
+
+        # Convert OCR result into Card objects and update our hand.
+        new_hand = []
+        suit_mapping = {"Flame": "Fire"}
+        for suit, rank in ocr_result:
+            mapped_suit = suit_mapping.get(suit, suit)
+            new_hand.append(Card(mapped_suit, rank))
+        self.current_hand = new_hand
+        # Refresh the hand UI on the main thread
+        self.after(0, self.refresh_hand_ui)
+        self.after(0, lambda: self.log(
+            "OCR-detected hand:\n" +
+            "\n".join(f"{i+1}. {card}" for i, card in enumerate(self.current_hand)) +
+            "\nThe deck has not been updated yet.\n"
+            "Fix any errors then click 'Edit Deck' or 'Find Next Action'."
+        ))
+        self.after(0, self.finish_ocr)
 
     def finish_ocr(self):
         """
@@ -281,6 +304,7 @@ class GameApp(tk.Tk):
         self.ocr_running = False
         self.ocr_cancelled = False
         self.ocr_button.config(text="Run OCR")
+        self.log("Finished OCR.")
 
     # --------------------------------------------------------------------------
     # Hand UI methods (manual add / remove)
@@ -302,22 +326,22 @@ class GameApp(tk.Tk):
             idx_lbl.grid(row=row_index, column=0, padx=5, pady=2, sticky="nsew")
             row_dict["index_label"] = idx_lbl
 
-            # Rank entry (read-only)
+            # Rank entry 
             rank_var = tk.StringVar(value=card.rank)
-            rank_entry = ttk.Entry(self.hand_frame, textvariable=rank_var, width=8, state="readonly")
+            rank_entry = ttk.Entry(self.hand_frame, textvariable=rank_var, width=8)
             rank_entry.grid(row=row_index, column=1, padx=5, pady=2, sticky="nsew")
             row_dict["rank_var"] = rank_var
 
-            # Suit option menu (read-only)
+            # Suit option menu 
             suit_var = tk.StringVar(value=card.suit)
             suit_menu = ttk.OptionMenu(self.hand_frame, suit_var, card.suit, *SUITS)
-            suit_menu.config(state="disabled")
+            suit_menu.config()
             suit_menu.grid(row=row_index, column=2, padx=5, pady=2, sticky="nsew")
             row_dict["suit_var"] = suit_var
 
-            # Critical check (read-only)
+            # Critical check 
             crit_var = tk.BooleanVar(value=card.critical)
-            crit_check = ttk.Checkbutton(self.hand_frame, variable=crit_var, state="disabled")
+            crit_check = ttk.Checkbutton(self.hand_frame, variable=crit_var)
             crit_check.grid(row=row_index, column=3, padx=5, pady=2, sticky="nsew")
             row_dict["crit_var"] = crit_var
 
@@ -383,7 +407,6 @@ class GameApp(tk.Tk):
 
     def read_hand_from_ui(self):
         """Rebuilds the hand from our model."""
-        # In this implementation, self.current_hand is our source of truth.
         return self.current_hand
 
     # --------------------------------------------------------------------------
@@ -400,21 +423,16 @@ class GameApp(tk.Tk):
     def reset_progress(self):
         self.progress_var.set(0)
 
-
     def update_progress(self):
         current = self.progress_var.get()
-
         if self.mcts_state == STATE.FAILED:
             self.reset_progress()
             return  
-
         if current < self.time_limit:
-            
             if (current + 1 < self.time_limit and self.mcts_state == STATE.RUNNING) or self.mcts_state == STATE.FINISHED:
                 self.progress_var.set(current + 1) 
             self.after(1000, self.update_progress)
       
-
     def find_next_action(self):
         global persistent_deck, prev_hand, suggested_action
 
@@ -431,22 +449,19 @@ class GameApp(tk.Tk):
             enemy_attack_power = int(self.enemy_attack_power_var.get())
             enemy_attack_counter = int(self.enemy_attack_counter_var.get())
             discard_count = int(self.discard_count_var.get())
-            coin_counter = int(self.coin_counter_var.get())
+            enemy_base_counter = int(self.enemy_base_counter_var.get())
         except ValueError:
             self.after(0, lambda: messagebox.showerror(
                 "Input Error", "Ensure that game state inputs are valid integers."))
             self.mcts_state = STATE.FAILED
             return
         
-        # Create or reuse persistent deck
         if persistent_deck is None:
             persistent_deck = Deck()
             persistent_deck.shuffle()
 
-        # Remove these cards from the deck (they're in hand)
         persistent_deck.external_draw(new_hand)
 
-        # Update deck size display
         if persistent_deck is not None:
             self.deck_size_var.set(str(len(persistent_deck.cards)))
         else:
@@ -458,12 +473,11 @@ class GameApp(tk.Tk):
             enemy_attack_power=enemy_attack_power,
             enemy_attack_counter=enemy_attack_counter,
             discard_count=discard_count,
-            coin_counter=coin_counter,
+            enemy_base_counter=enemy_base_counter,
             deck=persistent_deck,
             hand=new_hand
         )
         self.log(f"persistent_deck size: {len(persistent_deck.cards)}")
-
         self.log("Running MCTS to determine the next best action...")
         best_node_action, reward = mcts(self.pool, self.game_state, self.time_limit)
         suggested_action = best_node_action
@@ -516,15 +530,13 @@ class GameApp(tk.Tk):
                 messagebox.showerror("Error", "No discards available!")
                 return
 
-        if new_state.enemy_attack_counter <= 0:
-            new_state.player_health -= new_state.enemy_attack_power
-            new_state.enemy_attack_counter = 3
+        new_state.end_turn()
 
         self.player_health_var.set(str(new_state.player_health))
         self.enemy_health_var.set(str(int(new_state.enemy_health)))
         self.enemy_attack_counter_var.set(str(new_state.enemy_attack_counter))
         self.discard_count_var.set(str(new_state.discard_count))
-        self.coin_counter_var.set(str(new_state.coin_counter))
+        self.enemy_base_counter_var.set(str(new_state.enemy_base_counter))
 
         self.game_state = new_state
         prev_hand = new_state.hand
@@ -546,7 +558,6 @@ class GameApp(tk.Tk):
         self.suggestion_text.config(state="normal")
         self.suggestion_text.delete("1.0", tk.END)
 
-        # Clear the hand UI and model
         for widget in self.hand_frame.winfo_children():
             grid_row = widget.grid_info().get("row", 0)
             if grid_row not in (0, 1, 100):
@@ -554,14 +565,13 @@ class GameApp(tk.Tk):
         self.card_rows.clear()
         self.current_hand = []
 
-        # Reset all default values
         self.player_health_var.set("100")
         self.enemy_health_var.set("200")
         self.enemy_attack_power_var.set("3")
         self.enemy_attack_counter_var.set("2")
         self.discard_count_var.set("3")
-        self.coin_counter_var.set("0")
-        self.deck_size_var.set("N/A")
+        self.enemy_base_counter_var.set("3")
+        self.deck_size_var.set(len(persistent_deck.cards))
 
         self.log("Game has been reset.")
 
@@ -575,46 +585,37 @@ class GameApp(tk.Tk):
         editor.title("Edit Deck")
         editor.grab_set()  # modal
 
-        # Dictionary to hold IntVar for each card keyed by (suit, rank)
         checkbox_vars = {}
-
-        # Determine which cards are in hand (so they can be greyed out)
         hand_numbers = {card.number for card in self.current_hand}
 
         for i, suit in enumerate(SUITS):
             ttk.Label(editor, text=suit, font=("TkDefaultFont", 10, "bold")).grid(row=i+1, column=0, padx=3, pady=3)
-        # Create header for ranks
         for j, rank in enumerate(RANKS):
             ttk.Label(editor, text=rank, font=("TkDefaultFont", 10, "bold")).grid(row=0, column=j+1, padx=3, pady=3)
         if persistent_deck is not None:
             persistent_deck.external_draw(self.current_hand)
             self.deck_size_var.set(str(len(persistent_deck.cards)))
-        # Create checkboxes for each card
         for i, suit in enumerate(SUITS):
             for j, rank in enumerate(RANKS):
                 card_obj = Card(suit, rank)
                 var = tk.IntVar()
-                # If persistent_deck exists, check if this card number is in the deck.
                 if persistent_deck is not None and card_obj.number in persistent_deck.cards:
                     var.set(1)
                 else:
                     var.set(0)
                 checkbox_vars[(suit, rank)] = var
                 cb = tk.Checkbutton(editor, variable=var)
-                # Disable checkbox if this card is in hand
                 if card_obj.number in hand_numbers:
                     cb.config(state="disabled")
                 cb.grid(row=i+1, column=j+1, padx=2, pady=2)
 
         def save_deck():
             global persistent_deck
-            # Build new deck list from the selected checkboxes.
             new_cards = []
             for (suit, rank), var in checkbox_vars.items():
                 if var.get() == 1:
                     temp_card = Card(suit, rank)
                     new_cards.append(temp_card.number)
-            # If persistent_deck exists, update its cards. Otherwise, create a new Deck.
             if persistent_deck is None:
                 persistent_deck = Deck(new_cards)
             else:

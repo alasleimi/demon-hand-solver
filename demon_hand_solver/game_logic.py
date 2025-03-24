@@ -24,18 +24,18 @@ class Action:
 # =============================================================================
 
 class GameState:
-    __slots__ = ('player_health', 'enemy_health', 'enemy_attack_power', 'enemy_attack_counter',
-                 'discard_count', 'coin_counter', 'deck', 'hand')
+    __slots__ = ('player_health', 'enemy_health', 'enemy_attack_power', 'enemy_attack_counter', 'enemy_base_counter',
+                 'discard_count', 'enemy_base_counter', 'deck', 'hand',)
     
     def __init__(self, player_health=100, enemy_health=100, enemy_attack_power=10,
-                 enemy_attack_counter=3, discard_count=3, coin_counter=3,
+                 enemy_attack_counter=3, discard_count=3, enemy_base_counter=3,
                  deck=None, hand=None):
         self.player_health = player_health
         self.enemy_health = enemy_health
         self.enemy_attack_power = enemy_attack_power
         self.enemy_attack_counter = enemy_attack_counter
         self.discard_count = discard_count
-        self.coin_counter = coin_counter
+        self.enemy_base_counter = enemy_base_counter
         if deck is None:
             self.deck = Deck()
             self.deck.shuffle()
@@ -54,7 +54,7 @@ class GameState:
             enemy_attack_power=self.enemy_attack_power,
             enemy_attack_counter=self.enemy_attack_counter,
             discard_count=self.discard_count,
-            coin_counter=self.coin_counter,
+            enemy_base_counter=self.enemy_base_counter,
             deck=Deck(self.deck.cards[:]),
             hand=self.hand[:]
         )
@@ -73,7 +73,7 @@ class GameState:
     def enemy_turn(self):
         if self.enemy_attack_counter <= 0:
             self.player_health -= self.enemy_attack_power
-            self.enemy_attack_counter = 3
+            self.enemy_attack_counter = self.enemy_base_counter
 
     def end_turn(self):
         if self.deck.is_empty():
