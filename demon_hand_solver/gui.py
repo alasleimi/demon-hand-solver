@@ -144,7 +144,7 @@ class GameApp(tk.Tk):
         # Let columns expand equally
         for i in range(5):
             self.hand_frame.columnconfigure(i, weight=1)
-        self.hand_frame.columnconfigure(1, weight=3)  # Rank column expands more
+        self.hand_frame.columnconfigure(1, weight=4)  # Rank column expands more
         # Add "Add Card" button below the hand list.
         self.add_card_button = ttk.Button(self.hand_frame, text="Add Card", command=self.open_add_card_dialog)
         self.add_card_button.grid(row=100, column=0, columnspan=5, sticky="ew", padx=5, pady=5)
