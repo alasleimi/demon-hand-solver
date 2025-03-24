@@ -30,10 +30,13 @@ pip install -r requirements.txt
 ```
 optionally, download these two files and place them in the DATA folder. Otherwise, they will be computed on the very first time you start the script which may be a bit long (~3-5 mins):
 
-* file 1 
+* file 1 (to be uploaded) 
 
-* file 2
+* file 2 (to be uploaded)
+## Running the App
 
+```bash
+python -m demon_hand_solver
 
 ## ▶️ How to Use
 
