@@ -37,7 +37,7 @@ optionally, download these two files and place them in the DATA folder. Otherwis
 
 ```bash
 python -m demon_hand_solver
-
+```
 ## ▶️ How to Use
 
 1. Launch the game and this tool.
