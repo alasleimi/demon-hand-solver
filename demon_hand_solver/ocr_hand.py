@@ -41,7 +41,9 @@ def get_hands_ocr(screenshot_path = "ocr_input.png"):
 
     def on_press(key):
         if isinstance(key, keyboard.KeyCode):
-            if key.vk == 96:
+            print(f"The key was pressed!: {key.vk}")
+            
+            if key.vk == 96 or key.vk == 48:
                 listener.stop()
         
 
