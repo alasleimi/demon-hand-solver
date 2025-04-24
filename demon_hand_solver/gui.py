@@ -239,7 +239,7 @@ class GameApp(tk.Tk):
             self.ocr_running = True
             self.ocr_cancelled = False
             self.ocr_button.config(text="Cancel OCR")
-            self.log("Navigate to the game client and use numpad-0 to capture a screenshot")
+            self.log("Navigate to the game client and use 0 to capture a screenshot")
             threading.Thread(target=self.run_ocr, daemon=True).start()
         else:
             # Cancel OCR
